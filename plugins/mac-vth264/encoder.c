@@ -22,6 +22,9 @@
 extern const double NSAppKitVersionNumber;
 #define NSAppKitVersionNumber10_8 1187
 
+#define APPLE_H264_ENC_ID_HW "com.apple.videotoolbox.videoencoder.h264.gva"
+#define APPLE_H264_ENC_ID_SW "com.apple.videotoolbox.videoencoder.h264"
+
 // Get around missing symbol on 10.8 during compilation
 enum {
 	kCMFormatDescriptionBridgeError_InvalidParameter_ = -12712,
@@ -238,23 +241,18 @@ void sample_encoded_callback(void *data, void *source, OSStatus status,
 static inline CFMutableDictionaryRef create_encoder_spec(
 		const char *vt_encoder_id)
 {
-	bool has_id = vt_encoder_id != NULL && !!strlen(vt_encoder_id);
-
 	CFMutableDictionaryRef encoder_spec = CFDictionaryCreateMutable(
 			kCFAllocatorDefault,
-			has_id ? 3 : 2,
+			3,
 			&kCFTypeDictionaryKeyCallBacks,
 			&kCFTypeDictionaryValueCallBacks);
 
-	if (has_id) {
-		CFStringRef id = CFStringCreateWithFileSystemRepresentation(
-				NULL, vt_encoder_id);
-		CFDictionaryAddValue(encoder_spec, ENCODER_ID, id);
-		CFRelease(id);
-	}
+	CFStringRef id = CFStringCreateWithFileSystemRepresentation(
+			NULL, vt_encoder_id);
+	CFDictionaryAddValue(encoder_spec, ENCODER_ID, id);
+	CFRelease(id);
 
 	CFDictionaryAddValue(encoder_spec, ENABLE_HW_ACCEL, kCFBooleanTrue);
-
 	CFDictionaryAddValue(encoder_spec, REQUIRE_HW_ACCEL, kCFBooleanFalse);
 
 	return encoder_spec;
@@ -402,8 +400,7 @@ static void dump_encoder_info(struct vt_h264_encoder *enc)
 		"\trc_max_bitrate_window: %f (s)\n"
 		"\thw_enc:                %s\n"
 		"\tprofile:               %s\n",
-		(enc->vt_encoder_id != NULL && !!strlen(enc->vt_encoder_id))
-				? enc->vt_encoder_id : "default",
+		enc->vt_encoder_id,
 		enc->bitrate,
 		enc->fps_num,
 		enc->fps_den,
@@ -465,7 +462,6 @@ static void update_params(struct vt_h264_encoder *enc, obs_data_t *settings)
 	enc->rc_max_bitrate = obs_data_get_int(settings, "max_bitrate");
 	enc->rc_max_bitrate_window = obs_data_get_double(settings,
 			"max_bitrate_window");
-	enc->vt_encoder_id = obs_data_get_string(settings, "vt_encoder");
 	enc->bframes = obs_data_get_bool(settings, "bframes");
 }
 
@@ -508,13 +504,15 @@ static bool vt_h264_update(void *data, obs_data_t *settings)
 	return true;
 }
 
-static void *vt_h264_create(obs_data_t *settings, obs_encoder_t *encoder)
+static void *vt_h264_create(obs_data_t *settings,
+		obs_encoder_t *encoder, const char *vt_encoder_id)
 {
 	struct vt_h264_encoder *enc = bzalloc(sizeof(struct vt_h264_encoder));
 
 	OSStatus code;
 
 	enc->encoder = encoder;
+	enc->vt_encoder_id = vt_encoder_id;
 
 	update_params(enc, settings);
 
@@ -530,6 +528,16 @@ static void *vt_h264_create(obs_data_t *settings, obs_encoder_t *encoder)
 fail:
 	vt_h264_destroy(enc);
 	return NULL;
+}
+
+static void *vt_h264_create_hw(obs_data_t *settings, obs_encoder_t *encoder)
+{
+	return vt_h264_create(settings, encoder, APPLE_H264_ENC_ID_HW);
+}
+
+static void *vt_h264_create_sw(obs_data_t *settings, obs_encoder_t *encoder)
+{
+	return vt_h264_create(settings, encoder, APPLE_H264_ENC_ID_SW);
 }
 
 static const uint8_t annexb_startcode[4] = {0, 0, 0, 1};
@@ -824,9 +832,14 @@ static bool vt_h264_extra_data(void *data, uint8_t **extra_data, size_t *size)
 	return true;
 }
 
-static const char *vt_h264_getname(void)
+static const char *vt_h264_getname_hw(void)
 {
-	return obs_module_text("VTH264Enc");
+	return obs_module_text("VTH264EncHW");
+}
+
+static const char *vt_h264_getname_sw(void)
+{
+	return obs_module_text("VTH264EncSW");
 }
 
 #define TEXT_VT_ENCODER         obs_module_text("VTEncoder")
@@ -858,13 +871,6 @@ static obs_properties_t *vt_h264_properties(void *unused)
 	obs_properties_t *props = obs_properties_create();
 	obs_property_t *p;
 
-	p = obs_properties_add_list(props, "vt_encoder", TEXT_VT_ENCODER,
-			OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(p, TEXT_DEFAULT, "");
-	for (size_t i = 0; i < vt_encoders.num; i++)
-		obs_property_list_add_string(p, vt_encoders.array[i].name,
-				vt_encoders.array[i].id);
-
 	obs_properties_add_int(props, "bitrate", TEXT_BITRATE, 50, 10000000, 1);
 
 	p = obs_properties_add_bool(props, "limit_bitrate",
@@ -892,7 +898,6 @@ static obs_properties_t *vt_h264_properties(void *unused)
 
 static void vt_h264_defaults(obs_data_t *settings)
 {
-	obs_data_set_default_string(settings, "vt_encoder", "");
 	obs_data_set_default_int(settings, "bitrate", 2500);
 	obs_data_set_default_bool(settings, "limit_bitrate", false);
 	obs_data_set_default_int(settings, "max_bitrate", 2500);
@@ -901,21 +906,6 @@ static void vt_h264_defaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, "profile", "");
 	obs_data_set_default_bool(settings, "bframes", true);
 }
-
-static struct obs_encoder_info vt_h264_info = {
-	.id             = "vt_h264",
-	.type           = OBS_ENCODER_VIDEO,
-	.codec          = "h264",
-	.get_name       = vt_h264_getname,
-	.create         = vt_h264_create,
-	.destroy        = vt_h264_destroy,
-	.encode         = vt_h264_encode,
-	.update         = vt_h264_update,
-	.get_properties = vt_h264_properties,
-	.get_defaults   = vt_h264_defaults,
-	.get_video_info = vt_h264_video_info,
-	.get_extra_data = vt_h264_extra_data
-};
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("mac-h264", "en-US")
@@ -966,6 +956,37 @@ void encoder_list_destroy()
 	da_free(vt_encoders);
 }
 
+void register_encoders()
+{
+	struct obs_encoder_info info = {
+		.type           = OBS_ENCODER_VIDEO,
+		.codec          = "h264",
+		.destroy        = vt_h264_destroy,
+		.encode         = vt_h264_encode,
+		.update         = vt_h264_update,
+		.get_properties = vt_h264_properties,
+		.get_defaults   = vt_h264_defaults,
+		.get_video_info = vt_h264_video_info,
+		.get_extra_data = vt_h264_extra_data
+	};
+
+	for(size_t i = 0; i < vt_encoders.num; i++) {
+		if (strcmp(vt_encoders.array[i].id,
+				APPLE_H264_ENC_ID_HW) == 0) {
+			info.id = "vt_h264_hw";
+			info.get_name = vt_h264_getname_hw;
+			info.create = vt_h264_create_hw;
+			obs_register_encoder(&info);
+		} else if (strcmp(vt_encoders.array[i].id,
+				APPLE_H264_ENC_ID_SW) == 0) {
+			info.id = "vt_h264_sw";
+			info.get_name = vt_h264_getname_sw;
+			info.create = vt_h264_create_sw;
+			obs_register_encoder(&info);
+		}
+	}
+}
+
 bool obs_module_load(void)
 {
 	if (!is_appkit10_9_or_greater()) {
@@ -975,10 +996,9 @@ bool obs_module_load(void)
 	}
 
 	encoder_list_create();
+	register_encoders();
 
-	obs_register_encoder(&vt_h264_info);
-
-	VT_LOG(LOG_INFO, "Adding VideoToolbox H264 encoder");
+	VT_LOG(LOG_INFO, "Adding VideoToolbox H264 encoders");
 
 	return true;
 }
