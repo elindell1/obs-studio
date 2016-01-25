@@ -70,7 +70,28 @@ H264Encoder::H264Encoder(const obs_encoder_t *encoder,
 {}
 
 H264Encoder::~H264Encoder()
-{}
+{
+	HRESULT hr;
+
+	if (!descriptor->Async() || !eventGenerator || !pendingRequests)
+		return;
+
+	// Make sure all events have finished before releasing, and drain
+	// all output requests until it makes an input request.
+	// If you do not do this, you risk it releasing while there's still
+	// encoder activity, which can cause a crash with certain interfaces.
+	while (inputRequests == 0) {
+		hr = ProcessOutput();
+		if (hr != MF_E_TRANSFORM_NEED_MORE_INPUT && FAILED(hr)) {
+			MF_LOG_COM(LOG_ERROR, "H264Encoder::~H264Encoder: "
+					"ProcessOutput()", hr);
+			break;
+		}
+
+		if (inputRequests == 0)
+			Sleep(1);
+	}
+}
 
 HRESULT H264Encoder::CreateMediaTypes(ComPtr<IMFMediaType> &i,
 		ComPtr<IMFMediaType> &o)
@@ -419,11 +440,14 @@ bool H264Encoder::Initialize(std::function<bool(void)> func)
 		goto fail;
 	}
 
-	MF_LOG(LOG_INFO, "Setting output type to transform");
+	MF_LOG(LOG_INFO, "Activating encoder: %s",
+			typeNames[(int)descriptor->Type()]);
+
+	MF_LOG(LOG_INFO, "  Setting output type to transform:");
 	LogMediaType(outputType.Get());
 	HRC(transform->SetOutputType(0, outputType.Get(), 0));
 
-	MF_LOG(LOG_INFO, "Setting input type to transform");
+	MF_LOG(LOG_INFO, "  Setting input type to transform:");
 	LogMediaType(inputType.Get());
 	HRC(transform->SetInputType(0, inputType.Get(), 0));
 
@@ -598,6 +622,8 @@ bool H264Encoder::ProcessInput(UINT8 **data, UINT32 *linesize, UINT64 pts,
 
 	HRC(ProcessInput(sample));
 
+	pendingRequests++;
+
 	*status = SUCCESS;
 	return true;
 
@@ -740,6 +766,8 @@ bool H264Encoder::ProcessOutput(UINT8 **data, UINT32 *dataLength,
 	*dts = activeFrame.get()->Dts();
 	*keyframe = activeFrame.get()->Keyframe();
 	*status = SUCCESS;
+
+	pendingRequests--;
 
 	return true;
 }

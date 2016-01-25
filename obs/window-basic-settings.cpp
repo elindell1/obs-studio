@@ -266,13 +266,16 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	HookWidget(ui->outputMode,           COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->streamType,           COMBO_CHANGED,  STREAM1_CHANGED);
 	HookWidget(ui->simpleOutputPath,     EDIT_CHANGED,   OUTPUTS_CHANGED);
+	HookWidget(ui->simpleNoSpace,        CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->simpleOutRecFormat,   COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->simpleOutputVBitrate, SCROLL_CHANGED, OUTPUTS_CHANGED);
 	HookWidget(ui->simpleOutputABitrate, COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->simpleOutAdvanced,    CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->simpleOutPreset,      COMBO_CHANGED,  OUTPUTS_CHANGED);
-	HookWidget(ui->simpleOutPreset,      COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->simpleOutCustom,      EDIT_CHANGED,   OUTPUTS_CHANGED);
+	HookWidget(ui->simpleOutRecQuality,  COMBO_CHANGED,  OUTPUTS_CHANGED);
+	HookWidget(ui->simpleOutRecEncoder,  COMBO_CHANGED,  OUTPUTS_CHANGED);
+	HookWidget(ui->simpleOutMuxCustom,   EDIT_CHANGED,   OUTPUTS_CHANGED);
 	HookWidget(ui->advOutEncoder,        COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutUseRescale,     CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRescale,        CBEDIT_CHANGED, OUTPUTS_CHANGED);
@@ -283,16 +286,19 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	HookWidget(ui->advOutApplyService,   CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecType,        COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecPath,        EDIT_CHANGED,   OUTPUTS_CHANGED);
+	HookWidget(ui->advOutNoSpace,        CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecFormat,      COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecEncoder,     COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecUseRescale,  CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecRescale,     CBEDIT_CHANGED, OUTPUTS_CHANGED);
+	HookWidget(ui->advOutMuxCustom,      EDIT_CHANGED,   OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecTrack1,      CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecTrack2,      CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecTrack3,      CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecTrack4,      CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutFFType,         COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutFFRecPath,      EDIT_CHANGED,   OUTPUTS_CHANGED);
+	HookWidget(ui->advOutFFNoSpace,      CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutFFURL,          EDIT_CHANGED,   OUTPUTS_CHANGED);
 	HookWidget(ui->advOutFFFormat,       COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutFFMCfg,         EDIT_CHANGED,   OUTPUTS_CHANGED);
@@ -397,6 +403,9 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 		auto source   = static_cast<obs_source_t*>(calldata_ptr(param,
 					"source"));
 
+		if (!source)
+			return;
+
 		if (!(obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO))
 			return;
 
@@ -427,6 +436,14 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	hotkeyUnregistered.Connect(obs_get_signal_handler(),
 			"hotkey_unregister", ReloadHotkeysIgnore, this);
 
+	FillSimpleRecordingValues();
+	connect(ui->simpleOutRecQuality, SIGNAL(currentIndexChanged(int)),
+			this, SLOT(SimpleRecordingQualityChanged()));
+	connect(ui->simpleOutRecQuality, SIGNAL(currentIndexChanged(int)),
+			this, SLOT(SimpleRecordingQualityLosslessWarning(int)));
+	connect(ui->simpleOutRecEncoder, SIGNAL(currentIndexChanged(int)),
+			this, SLOT(SimpleRecordingEncoderChanged()));
+
 	LoadSettings(false);
 
 	// Add warning checks to advanced output recording section controls
@@ -439,6 +456,8 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	connect(ui->advOutRecTrack4, SIGNAL(clicked()),
 			this, SLOT(AdvOutRecCheckWarnings()));
 	AdvOutRecCheckWarnings();
+
+	SimpleRecordingQualityChanged();
 }
 
 void OBSBasicSettings::SaveCombo(QComboBox *widget, const char *section,
@@ -995,6 +1014,8 @@ void OBSBasicSettings::LoadSimpleOutputSettings()
 {
 	const char *path = config_get_string(main->Config(), "SimpleOutput",
 			"FilePath");
+	bool noSpace = config_get_bool(main->Config(), "SimpleOutput",
+			"FileNameWithoutSpace");
 	const char *format = config_get_string(main->Config(), "SimpleOutput",
 			"RecFormat");
 	int videoBitrate = config_get_uint(main->Config(), "SimpleOutput",
@@ -1007,8 +1028,17 @@ void OBSBasicSettings::LoadSimpleOutputSettings()
 			"Preset");
 	const char *custom = config_get_string(main->Config(), "SimpleOutput",
 			"x264Settings");
+	const char *recQual = config_get_string(main->Config(), "SimpleOutput",
+			"RecQuality");
+	const char *recEnc = config_get_string(main->Config(), "SimpleOutput",
+			"RecEncoder");
+	const char *muxCustom = config_get_string(main->Config(),
+			"SimpleOutput", "MuxerCustom");
+
+	audioBitrate = FindClosestAvailableAACBitrate(audioBitrate);
 
 	ui->simpleOutputPath->setText(path);
+	ui->simpleNoSpace->setChecked(noSpace);
 	ui->simpleOutputVBitrate->setValue(videoBitrate);
 
 	int idx = ui->simpleOutRecFormat->findText(format);
@@ -1020,6 +1050,16 @@ void OBSBasicSettings::LoadSimpleOutputSettings()
 	ui->simpleOutAdvanced->setChecked(advanced);
 	ui->simpleOutPreset->setCurrentText(preset);
 	ui->simpleOutCustom->setText(custom);
+
+	idx = ui->simpleOutRecQuality->findData(QString(recQual));
+	if (idx == -1) idx = 0;
+	ui->simpleOutRecQuality->setCurrentIndex(idx);
+
+	idx = ui->simpleOutRecEncoder->findData(QString(recEnc));
+	if (idx == -1) idx = 0;
+	ui->simpleOutRecEncoder->setCurrentIndex(idx);
+
+	ui->simpleOutMuxCustom->setText(muxCustom);
 }
 
 void OBSBasicSettings::LoadAdvOutputStreamingSettings()
@@ -1099,17 +1139,23 @@ void OBSBasicSettings::LoadAdvOutputRecordingSettings()
 			"RecFormat");
 	const char *path = config_get_string(main->Config(), "AdvOut",
 			"RecFilePath");
+	bool noSpace = config_get_bool(main->Config(), "AdvOut",
+			"RecFileNameWithoutSpace");
 	bool rescale = config_get_bool(main->Config(), "AdvOut",
 			"RecRescale");
 	const char *rescaleRes = config_get_string(main->Config(), "AdvOut",
 			"RecRescaleRes");
+	const char *muxCustom = config_get_string(main->Config(), "AdvOut",
+			"RecMuxerCustom");
 	int tracks = config_get_int(main->Config(), "AdvOut", "RecTracks");
 
 	int typeIndex = (astrcmpi(type, "FFmpeg") == 0) ? 1 : 0;
 	ui->advOutRecType->setCurrentIndex(typeIndex);
 	ui->advOutRecPath->setText(path);
+	ui->advOutNoSpace->setChecked(noSpace);
 	ui->advOutRecUseRescale->setChecked(rescale);
 	ui->advOutRecRescale->setCurrentText(rescaleRes);
+	ui->advOutMuxCustom->setText(muxCustom);
 
 	int idx = ui->advOutRecFormat->findText(format);
 	ui->advOutRecFormat->setCurrentIndex(idx);
@@ -1168,6 +1214,8 @@ void OBSBasicSettings::LoadAdvOutputFFmpegSettings()
 			"FFOutputToFile");
 	const char *path = config_get_string(main->Config(), "AdvOut",
 			"FFFilePath");
+	bool noSpace = config_get_bool(main->Config(), "AdvOut",
+			"FFFileNameWithoutSpace");
 	const char *url = config_get_string(main->Config(), "AdvOut", "FFURL");
 	const char *format = config_get_string(main->Config(), "AdvOut",
 			"FFFormat");
@@ -1200,6 +1248,7 @@ void OBSBasicSettings::LoadAdvOutputFFmpegSettings()
 
 	ui->advOutFFType->setCurrentIndex(saveFile ? 0 : 1);
 	ui->advOutFFRecPath->setText(QT_UTF8(path));
+	ui->advOutFFNoSpace->setChecked(noSpace);
 	ui->advOutFFURL->setText(QT_UTF8(url));
 	SelectFormat(ui->advOutFFFormat, format, mimeType);
 	ui->advOutFFMCfg->setText(muxCustom);
@@ -1239,6 +1288,11 @@ void OBSBasicSettings::LoadAdvOutputAudioSettings()
 			"Track3Name");
 	const char *name4 = config_get_string(main->Config(), "AdvOut",
 			"Track4Name");
+
+	track1Bitrate = FindClosestAvailableAACBitrate(track1Bitrate);
+	track2Bitrate = FindClosestAvailableAACBitrate(track2Bitrate);
+	track3Bitrate = FindClosestAvailableAACBitrate(track3Bitrate);
+	track4Bitrate = FindClosestAvailableAACBitrate(track4Bitrate);
 
 	SetComboByName(ui->advOutTrack1Bitrate,
 			std::to_string(track1Bitrate).c_str());
@@ -1324,9 +1378,14 @@ void OBSBasicSettings::LoadListValues(QComboBox *widget, obs_property_t *prop,
 	size_t count = obs_property_list_item_count(prop);
 
 	obs_source_t *source = obs_get_output_source(index);
-	obs_data_t *settings = obs_source_get_settings(source);
+	const char *deviceId = nullptr;
+	obs_data_t *settings = nullptr;
 
-	const char *deviceId = obs_data_get_string(settings, "device_id");
+	if (source) {
+		settings = obs_source_get_settings(source);
+		if (settings)
+			deviceId = obs_data_get_string(settings, "device_id");
+	}
 
 	widget->addItem(QTStr("Disabled"), "disabled");
 
@@ -1336,12 +1395,16 @@ void OBSBasicSettings::LoadListValues(QComboBox *widget, obs_property_t *prop,
 		LoadListValue(widget, name, val);
 	}
 
-	int idx = widget->findData(QVariant(QT_UTF8(deviceId)));
-	if (idx != -1)
-		widget->setCurrentIndex(idx);
+	if (deviceId) {
+		int idx = widget->findData(QVariant(QT_UTF8(deviceId)));
+		if (idx != -1)
+			widget->setCurrentIndex(idx);
+	}
 
-	obs_source_release(source);
-	obs_data_release(settings);
+	if (settings)
+		obs_data_release(settings);
+	if (source)
+		obs_source_release(source);
 }
 
 void OBSBasicSettings::LoadAudioDevices()
@@ -1371,6 +1434,8 @@ void OBSBasicSettings::LoadAudioDevices()
 		obs_properties_destroy(output_props);
 	}
 }
+
+#define NBSP "\xC2\xA0"
 
 void OBSBasicSettings::LoadAudioSources()
 {
@@ -1406,7 +1471,7 @@ void OBSBasicSettings::LoadAudioSources()
 		form->addRow(ptmCB);
 
 		auto ptmSB = new SilentUpdateSpinBox();
-		ptmSB->setSuffix(" ms");
+		ptmSB->setSuffix(NBSP "ms");
 		ptmSB->setRange(0, INT_MAX);
 		ptmSB->setValue(obs_source_get_push_to_mute_delay(source));
 		form->addRow(ptmDelay, ptmSB);
@@ -1417,7 +1482,7 @@ void OBSBasicSettings::LoadAudioSources()
 		form->addRow(pttCB);
 
 		auto pttSB = new SilentUpdateSpinBox();
-		pttSB->setSuffix(" ms");
+		pttSB->setSuffix(NBSP "ms");
 		pttSB->setRange(0, INT_MAX);
 		pttSB->setValue(obs_source_get_push_to_talk_delay(source));
 		form->addRow(pttDelay, pttSB);
@@ -1478,14 +1543,6 @@ void OBSBasicSettings::LoadAudioSources()
 		return true;
 	};
 
-	for (int i = 0; i < MAX_CHANNELS; i++) {
-		obs_source_t *source = obs_get_output_source(i);
-		if (!source) continue;
-
-		AddSource(source);
-		obs_source_release(source);
-	}
-
 	using AddSource_t = decltype(AddSource);
 	obs_enum_sources([](void *data, obs_source_t *source)
 	{
@@ -1511,9 +1568,7 @@ void OBSBasicSettings::LoadAudioSettings()
 	loading = true;
 
 	const char *str;
-	if (sampleRate == 22050)
-		str = "22.05khz";
-	else if (sampleRate == 48000)
+	if (sampleRate == 48000)
 		str = "48khz";
 	else
 		str = "44.1khz";
@@ -1848,7 +1903,7 @@ void OBSBasicSettings::LoadHotkeySettings(obs_hotkey_id ignoreKey)
 				OBSHotkeyLabel *other, const QString &otherName)
 		{
 			label->setToolTip(tt.arg(otherName));
-			label->setText(name + " ✳");
+			label->setText(name + " *");
 			label->pairPartner = other;
 		};
 		Update(label1, name1, label2, name2);
@@ -2075,10 +2130,14 @@ void OBSBasicSettings::SaveOutputSettings()
 	SaveSpinBox(ui->simpleOutputVBitrate, "SimpleOutput", "VBitrate");
 	SaveCombo(ui->simpleOutputABitrate, "SimpleOutput", "ABitrate");
 	SaveEdit(ui->simpleOutputPath, "SimpleOutput", "FilePath");
+	SaveCheckBox(ui->simpleNoSpace, "SimpleOutput", "FileNameWithoutSpace");
 	SaveCombo(ui->simpleOutRecFormat, "SimpleOutput", "RecFormat");
 	SaveCheckBox(ui->simpleOutAdvanced, "SimpleOutput", "UseAdvanced");
 	SaveCombo(ui->simpleOutPreset, "SimpleOutput", "Preset");
 	SaveEdit(ui->simpleOutCustom, "SimpleOutput", "x264Settings");
+	SaveComboData(ui->simpleOutRecQuality, "SimpleOutput", "RecQuality");
+	SaveComboData(ui->simpleOutRecEncoder, "SimpleOutput", "RecEncoder");
+	SaveEdit(ui->simpleOutMuxCustom, "SimpleOutput", "MuxerCustom");
 
 	SaveCheckBox(ui->advOutApplyService, "AdvOut", "ApplyServiceSettings");
 	SaveComboData(ui->advOutEncoder, "AdvOut", "Encoder");
@@ -2092,10 +2151,12 @@ void OBSBasicSettings::SaveOutputSettings()
 			RecTypeFromIdx(ui->advOutRecType->currentIndex()));
 
 	SaveEdit(ui->advOutRecPath, "AdvOut", "RecFilePath");
+	SaveCheckBox(ui->advOutNoSpace, "AdvOut", "RecFileNameWithoutSpace");
 	SaveCombo(ui->advOutRecFormat, "AdvOut", "RecFormat");
 	SaveComboData(ui->advOutRecEncoder, "AdvOut", "RecEncoder");
 	SaveCheckBox(ui->advOutRecUseRescale, "AdvOut", "RecRescale");
 	SaveCombo(ui->advOutRecRescale, "AdvOut", "RecRescaleRes");
+	SaveEdit(ui->advOutMuxCustom, "AdvOut", "RecMuxerCustom");
 
 	config_set_int(main->Config(), "AdvOut", "RecTracks",
 			(ui->advOutRecTrack1->isChecked() ? (1<<0) : 0) |
@@ -2106,6 +2167,7 @@ void OBSBasicSettings::SaveOutputSettings()
 	config_set_bool(main->Config(), "AdvOut", "FFOutputToFile",
 			ui->advOutFFType->currentIndex() == 0 ? true : false);
 	SaveEdit(ui->advOutFFRecPath, "AdvOut", "FFFilePath");
+	SaveCheckBox(ui->advOutFFNoSpace, "AdvOut", "FFFileNameWithoutSpace");
 	SaveEdit(ui->advOutFFURL, "AdvOut", "FFURL");
 	SaveFormat(ui->advOutFFFormat);
 	SaveEdit(ui->advOutFFMCfg, "AdvOut", "FFMCustom");
@@ -2143,9 +2205,7 @@ void OBSBasicSettings::SaveAudioSettings()
 	const char *channelSetup = (channelSetupIdx == 0) ? "Mono" : "Stereo";
 
 	int sampleRate = 44100;
-	if (sampleRateStr == "22.05khz")
-		sampleRate = 22050;
-	else if (sampleRateStr == "48khz")
+	if (sampleRateStr == "48khz")
 		sampleRate = 48000;
 
 	if (WidgetChanged(ui->sampleRate))
@@ -2497,6 +2557,11 @@ void OBSBasicSettings::on_advOutFFVEncoder_currentIndexChanged(int idx)
 	}
 }
 
+void OBSBasicSettings::on_advOutFFType_currentIndexChanged(int idx)
+{
+	ui->advOutFFNoSpace->setHidden(idx != 0);
+}
+
 void OBSBasicSettings::on_colorFormat_currentIndexChanged(const QString &text)
 {
 	bool usingNV12 = text == "NV12";
@@ -2750,4 +2815,112 @@ void OBSBasicSettings::UpdateStreamDelayEstimate()
 		UpdateSimpleOutStreamDelayEstimate();
 	else
 		UpdateAdvOutStreamDelayEstimate();
+}
+
+void OBSBasicSettings::FillSimpleRecordingValues()
+{
+#define ADD_QUALITY(str) \
+	ui->simpleOutRecQuality->addItem( \
+			QTStr("Basic.Settings.Output.Simple.RecordingQuality." \
+				str), \
+			QString(str));
+#define ENCODER_STR(str) QTStr("Basic.Settings.Output.Simple.Encoder." str)
+
+	ADD_QUALITY("Stream");
+	ADD_QUALITY("Small");
+	ADD_QUALITY("HQ");
+	ADD_QUALITY("Lossless");
+
+	ui->simpleOutRecEncoder->addItem(
+			ENCODER_STR("Software"),
+			QString(SIMPLE_ENCODER_X264));
+	ui->simpleOutRecEncoder->addItem(
+			ENCODER_STR("SoftwareLowCPU"),
+			QString(SIMPLE_ENCODER_X264_LOWCPU));
+#undef ADD_QUALITY
+#undef ENCODER_STR
+}
+
+void OBSBasicSettings::SimpleRecordingQualityChanged()
+{
+	QString qual = ui->simpleOutRecQuality->currentData().toString();
+	bool streamQuality = qual == "Stream";
+	bool losslessQuality = !streamQuality && qual == "Lossless";
+
+	bool showEncoder = !streamQuality && !losslessQuality;
+	ui->simpleOutRecEncoder->setVisible(showEncoder);
+	ui->simpleOutRecEncoderLabel->setVisible(showEncoder);
+	ui->simpleOutRecFormat->setVisible(!losslessQuality);
+	ui->simpleOutRecFormatLabel->setVisible(!losslessQuality);
+
+	SimpleRecordingEncoderChanged();
+}
+
+#define SIMPLE_OUTPUT_WARNING(str) \
+	QTStr("Basic.Settings.Output.Simple.Warn." str)
+
+void OBSBasicSettings::SimpleRecordingEncoderChanged()
+{
+	QString qual = ui->simpleOutRecQuality->currentData().toString();
+	QString warning;
+
+	delete simpleOutRecWarning;
+
+	if (qual == "Stream") {
+		return;
+
+	} else if (qual == "Lossless") {
+		warning  = SIMPLE_OUTPUT_WARNING("Lossless");
+		warning += "\n\n";
+		warning += SIMPLE_OUTPUT_WARNING("Encoder");
+
+	} else {
+		QString enc = ui->simpleOutRecEncoder->currentData().toString();
+		if (enc != SIMPLE_ENCODER_X264 &&
+		    enc != SIMPLE_ENCODER_X264_LOWCPU)
+			return;
+
+		warning = SIMPLE_OUTPUT_WARNING("Encoder");
+	}
+
+	simpleOutRecWarning = new QLabel(warning, this);
+	simpleOutRecWarning->setObjectName("warningLabel");
+	simpleOutRecWarning->setWordWrap(true);
+	ui->simpleOutInfoLayout->addWidget(simpleOutRecWarning);
+}
+
+void OBSBasicSettings::SimpleRecordingQualityLosslessWarning(int idx)
+{
+	if (idx == lastSimpleRecQualityIdx || idx == -1)
+		return;
+
+	QString qual = ui->simpleOutRecQuality->itemData(idx).toString();
+
+	if (loading) {
+		lastSimpleRecQualityIdx = idx;
+		return;
+	}
+
+	if (qual == "Lossless") {
+		QMessageBox::StandardButton button;
+
+		QString warningString =
+			SIMPLE_OUTPUT_WARNING("Lossless") +
+			QString("\n\n") +
+			SIMPLE_OUTPUT_WARNING("Lossless.Msg");
+
+		button = QMessageBox::question(this,
+				SIMPLE_OUTPUT_WARNING("Lossless.Title"),
+				warningString,
+				QMessageBox::Yes | QMessageBox::No);
+
+		if (button == QMessageBox::No) {
+			QMetaObject::invokeMethod(ui->simpleOutRecQuality,
+					"setCurrentIndex", Qt::QueuedConnection,
+					Q_ARG(int, lastSimpleRecQualityIdx));
+			return;
+		}
+	}
+
+	lastSimpleRecQualityIdx = idx;
 }

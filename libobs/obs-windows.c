@@ -507,3 +507,121 @@ void obs_key_combination_to_str(obs_key_combination_t combination,
 		add_combo_key(combination.key, str);
 	}
 }
+
+bool sym_initialize_called = false;
+
+void reset_win32_symbol_paths(void)
+{
+	static BOOL (WINAPI *sym_initialize_w)(HANDLE, const wchar_t*, BOOL);
+	static BOOL (WINAPI *sym_set_search_path_w)(HANDLE, const wchar_t*);
+	static bool funcs_initialized = false;
+	static bool initialize_success = false;
+
+	struct obs_module *module = obs->first_module;
+	struct dstr path_str = {0};
+	DARRAY(char*) paths;
+	wchar_t *path_str_w = NULL;
+	char *abspath;
+
+	da_init(paths);
+
+	if (!funcs_initialized) {
+		HMODULE mod;
+		funcs_initialized = true;
+
+		mod = LoadLibraryW(L"DbgHelp");
+		if (!mod)
+			return;
+
+		sym_initialize_w = (void*)GetProcAddress(mod, "SymInitializeW");
+		sym_set_search_path_w = (void*)GetProcAddress(mod,
+				"SymSetSearchPathW");
+		if (!sym_initialize_w || !sym_set_search_path_w)
+			return;
+
+		initialize_success = true;
+	}
+
+	if (!initialize_success)
+		return;
+
+	abspath = os_get_abs_path_ptr(".");
+	if (abspath)
+		da_push_back(paths, &abspath);
+
+	while (module) {
+		bool found = false;
+		struct dstr path = {0};
+		char *path_end;
+
+		dstr_copy(&path, module->bin_path);
+		dstr_replace(&path, "/", "\\");
+
+		path_end = strrchr(path.array, '\\');
+		if (!path_end) {
+			module = module->next;
+			dstr_free(&path);
+			continue;
+		}
+
+		*path_end = 0;
+
+		for (size_t i = 0; i < paths.num; i++) {
+			const char *existing_path = paths.array[i];
+			if (astrcmpi(path.array, existing_path) == 0) {
+				found = true;
+				break;
+			}
+		}
+
+		if (!found) {
+			abspath = os_get_abs_path_ptr(path.array);
+			if (abspath)
+				da_push_back(paths, &abspath);
+		}
+
+		dstr_free(&path);
+
+		module = module->next;
+	}
+
+	for (size_t i = 0; i < paths.num; i++) {
+		const char *path = paths.array[i];
+		if (path && *path) {
+			if (i != 0)
+				dstr_cat(&path_str, ";");
+			dstr_cat(&path_str, paths.array[i]);
+		}
+	}
+
+	if (path_str.array) {
+		os_utf8_to_wcs_ptr(path_str.array, path_str.len, &path_str_w);
+		if (path_str_w) {
+			if (!sym_initialize_called) {
+				sym_initialize_w(GetCurrentProcess(),
+						path_str_w, false);
+				sym_initialize_called = true;
+			} else {
+				sym_set_search_path_w(GetCurrentProcess(),
+						path_str_w);
+			}
+
+			bfree(path_str_w);
+		}
+	}
+
+	for (size_t i = 0; i < paths.num; i++)
+		bfree(paths.array[i]);
+	dstr_free(&path_str);
+	da_free(paths);
+}
+
+void initialize_com(void)
+{
+	CoInitializeEx(0, COINIT_MULTITHREADED);
+}
+
+void uninitialize_com(void)
+{
+	CoUninitialize();
+}

@@ -71,6 +71,10 @@ static inline char *get_module_name(const char *file)
 	return name.array;
 }
 
+#ifdef _WIN32
+extern void reset_win32_symbol_paths(void);
+#endif
+
 int obs_open_module(obs_module_t **module, const char *path,
 		const char *data_path)
 {
@@ -79,6 +83,8 @@ int obs_open_module(obs_module_t **module, const char *path,
 
 	if (!module || !path || !obs)
 		return MODULE_ERROR;
+
+	blog(LOG_INFO, "---------------------------------");
 
 	mod.module = os_dlopen(path);
 	if (!mod.module) {
@@ -98,8 +104,7 @@ int obs_open_module(obs_module_t **module, const char *path,
 	mod.next      = obs->first_module;
 
 	if (mod.file) {
-		blog(LOG_INFO, "---------------------------------\n"
-				"Loading module: %s", mod.file);
+		blog(LOG_INFO, "Loading module: %s", mod.file);
 	}
 
 	*module = bmemdup(&mod, sizeof(mod));
@@ -225,10 +230,19 @@ static void load_all_callback(void *param, const struct obs_module_info *info)
 }
 
 static const char *obs_load_all_modules_name = "obs_load_all_modules";
+#ifdef _WIN32
+static const char *reset_win32_symbol_paths_name = "reset_win32_symbol_paths";
+#endif
+
 void obs_load_all_modules(void)
 {
 	profile_start(obs_load_all_modules_name);
 	obs_find_modules(load_all_callback, NULL);
+#ifdef _WIN32
+	profile_start(reset_win32_symbol_paths_name);
+	reset_win32_symbol_paths();
+	profile_end(reset_win32_symbol_paths_name);
+#endif
 	profile_end(obs_load_all_modules_name);
 }
 

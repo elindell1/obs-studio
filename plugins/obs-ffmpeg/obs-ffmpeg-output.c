@@ -44,6 +44,8 @@ struct ffmpeg_cfg {
 	const char         *video_settings;
 	const char         *audio_settings;
 	enum AVPixelFormat format;
+	enum AVColorRange  color_range;
+	enum AVColorSpace  color_space;
 	int                scale_width;
 	int                scale_height;
 	int                width;
@@ -175,6 +177,8 @@ static bool open_video_codec(struct ffmpeg_data *data)
 	data->vframe->format = context->pix_fmt;
 	data->vframe->width  = context->width;
 	data->vframe->height = context->height;
+	data->vframe->colorspace = data->config.color_space;
+	data->vframe->color_range = data->config.color_range;
 
 	ret = avpicture_alloc(&data->dst_picture, context->pix_fmt,
 			context->width, context->height);
@@ -231,6 +235,8 @@ static bool create_video_stream(struct ffmpeg_data *data)
 	context->time_base      = (AVRational){ ovi.fps_den, ovi.fps_num };
 	context->gop_size       = 120;
 	context->pix_fmt        = closest_format;
+	context->colorspace     = data->config.color_space;
+	context->color_range    = data->config.color_range;
 
 	data->video->time_base = context->time_base;
 
@@ -448,6 +454,34 @@ static inline const char *safe_str(const char *s)
 		return s;
 }
 
+static enum AVCodecID get_codec_id(const char *name, int id)
+{
+	AVCodec *codec;
+
+	if (id != 0)
+		return (enum AVCodecID)id;
+
+	if (!name || !*name)
+		return AV_CODEC_ID_NONE;
+
+	codec = avcodec_find_encoder_by_name(name);
+	if (!codec)
+		return AV_CODEC_ID_NONE;
+
+	return codec->id;
+}
+
+static void set_encoder_ids(struct ffmpeg_data *data)
+{
+	data->output->oformat->video_codec = get_codec_id(
+			data->config.video_encoder,
+			data->config.video_encoder_id);
+
+	data->output->oformat->audio_codec = get_codec_id(
+			data->config.audio_encoder,
+			data->config.audio_encoder_id);
+}
+
 static bool ffmpeg_data_init(struct ffmpeg_data *data,
 		struct ffmpeg_cfg *config)
 {
@@ -487,12 +521,8 @@ static bool ffmpeg_data_init(struct ffmpeg_data *data,
 		data->output->oformat->video_codec = AV_CODEC_ID_H264;
 		data->output->oformat->audio_codec = AV_CODEC_ID_AAC;
 	} else {
-		if (data->config.format_name) {
-			data->output->oformat->video_codec =
-					data->config.video_encoder_id;
-			data->output->oformat->audio_codec =
-					data->config.audio_encoder_id;
-		}
+		if (data->config.format_name)
+			set_encoder_ids(data);
 	}
 
 	if (!data->output) {
@@ -559,6 +589,7 @@ fail:
 }
 
 static void ffmpeg_output_stop(void *data);
+static void ffmpeg_deactivate(struct ffmpeg_output *output);
 
 static void ffmpeg_output_destroy(void *data)
 {
@@ -781,7 +812,7 @@ static void receive_audio(void *param, struct audio_data *frame)
 	}
 }
 
-static bool process_packet(struct ffmpeg_output *output)
+static int process_packet(struct ffmpeg_output *output)
 {
 	AVPacket packet;
 	bool new_packet = false;
@@ -796,7 +827,7 @@ static bool process_packet(struct ffmpeg_output *output)
 	pthread_mutex_unlock(&output->write_mutex);
 
 	if (!new_packet)
-		return true;
+		return 0;
 
 	/*blog(LOG_DEBUG, "size = %d, flags = %lX, stream = %d, "
 			"packets queued: %lu",
@@ -808,10 +839,10 @@ static bool process_packet(struct ffmpeg_output *output)
 		av_free_packet(&packet);
 		blog(LOG_WARNING, "receive_audio: Error writing packet: %s",
 				av_err2str(ret));
-		return false;
+		return ret;
 	}
 
-	return true;
+	return 0;
 }
 
 static void *write_thread(void *data)
@@ -823,11 +854,18 @@ static void *write_thread(void *data)
 		if (os_event_try(output->stop_event) == 0)
 			break;
 
-		if (!process_packet(output)) {
+		int ret = process_packet(output);
+		if (ret != 0) {
+			int code = OBS_OUTPUT_ERROR;
+
 			pthread_detach(output->write_thread);
 			output->write_thread_active = false;
 
-			ffmpeg_output_stop(output);
+			if (ret == -ENOSPC)
+				code = OBS_OUTPUT_NO_SPACE;
+
+			obs_output_signal_stop(output->output, code);
+			ffmpeg_deactivate(output);
 			break;
 		}
 	}
@@ -848,6 +886,7 @@ static inline const char *get_string_or_null(obs_data_t *settings,
 static bool try_connect(struct ffmpeg_output *output)
 {
 	video_t *video = obs_output_video(output->output);
+	const struct video_output_info *voi = video_output_get_info(video);
 	struct ffmpeg_cfg config;
 	obs_data_t *settings;
 	bool success;
@@ -875,6 +914,16 @@ static bool try_connect(struct ffmpeg_output *output)
 	config.height = (int)obs_output_get_height(output->output);
 	config.format = obs_to_ffmpeg_video_format(
 			video_output_get_format(video));
+
+	if (format_is_yuv(voi->format)) {
+		config.color_range = voi->range == VIDEO_RANGE_FULL ?
+			AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+		config.color_space = voi->colorspace == VIDEO_CS_709 ?
+			AVCOL_SPC_BT709 : AVCOL_SPC_BT470BG;
+	} else {
+		config.color_range = AVCOL_RANGE_UNSPECIFIED;
+		config.color_space = AVCOL_SPC_RGB;
+	}
 
 	if (config.format == AV_PIX_FMT_NONE) {
 		blog(LOG_DEBUG, "invalid pixel format used for FFmpeg output");
@@ -946,24 +995,28 @@ static void ffmpeg_output_stop(void *data)
 
 	if (output->active) {
 		obs_output_end_data_capture(output->output);
-
-		if (output->write_thread_active) {
-			os_event_signal(output->stop_event);
-			os_sem_post(output->write_sem);
-			pthread_join(output->write_thread, NULL);
-			output->write_thread_active = false;
-		}
-
-		pthread_mutex_lock(&output->write_mutex);
-
-		for (size_t i = 0; i < output->packets.num; i++)
-			av_free_packet(output->packets.array+i);
-		da_free(output->packets);
-
-		pthread_mutex_unlock(&output->write_mutex);
-
-		ffmpeg_data_free(&output->ff_data);
+		ffmpeg_deactivate(output);
 	}
+}
+
+static void ffmpeg_deactivate(struct ffmpeg_output *output)
+{
+	if (output->write_thread_active) {
+		os_event_signal(output->stop_event);
+		os_sem_post(output->write_sem);
+		pthread_join(output->write_thread, NULL);
+		output->write_thread_active = false;
+	}
+
+	pthread_mutex_lock(&output->write_mutex);
+
+	for (size_t i = 0; i < output->packets.num; i++)
+		av_free_packet(output->packets.array+i);
+	da_free(output->packets);
+
+	pthread_mutex_unlock(&output->write_mutex);
+
+	ffmpeg_data_free(&output->ff_data);
 }
 
 struct obs_output_info ffmpeg_output = {

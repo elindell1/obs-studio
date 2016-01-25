@@ -8,8 +8,8 @@ protected:
 	struct obs_source_audio currentPacket;
 	DeckLink                *decklink = nullptr;
 	DeckLinkDevice          *device = nullptr;
-	bool                    doRgb = false;
 	DeckLinkDeviceMode      *mode = nullptr;
+	BMDPixelFormat          pixelFormat = bmdFormat8BitYUV;
 	ComPtr<IDeckLinkInput>  input;
 	volatile long           refCount = 1;
 
@@ -27,6 +27,8 @@ public:
 	{
 		return mode ? mode->GetId() : 0;
 	}
+
+	inline BMDPixelFormat GetActivePixelFormat() const {return pixelFormat;}
 
 	inline DeckLinkDeviceMode *GetMode() const {return mode;}
 

@@ -435,6 +435,7 @@ static void update_params(struct obs_x264 *obsx264, obs_data_t *settings,
 	info("settings:\n"
 	     "\tbitrate:     %d\n"
 	     "\tbuffer size: %d\n"
+	     "\tcrf:         %d%s\n"
 	     "\tfps_num:     %d\n"
 	     "\tfps_den:     %d\n"
 	     "\twidth:       %d\n"
@@ -444,6 +445,8 @@ static void update_params(struct obs_x264 *obsx264, obs_data_t *settings,
 	     "\tcbr:         %s",
 	     obsx264->params.rc.i_vbv_max_bitrate,
 	     obsx264->params.rc.i_vbv_buffer_size,
+	     (int)obsx264->params.rc.f_rf_constant,
+	     cbr ? " (0 when CBR is enabled)" : "",
 	     voi->fps_num, voi->fps_den,
 	     width, height,
 	     obsx264->params.i_keyint_max,

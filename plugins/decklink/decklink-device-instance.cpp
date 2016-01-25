@@ -8,21 +8,22 @@
 #define LOG(level, message, ...) blog(level, "%s: " message, \
 		obs_source_get_name(this->decklink->GetSource()), ##__VA_ARGS__)
 
+static inline enum video_format ConvertPixelFormat(BMDPixelFormat format)
+{
+	switch (format) {
+	case bmdFormat8BitBGRA: return VIDEO_FORMAT_BGRX;
+
+	default:
+	case bmdFormat8BitYUV:;
+	}
+
+	return VIDEO_FORMAT_UYVY;
+}
+
 DeckLinkDeviceInstance::DeckLinkDeviceInstance(DeckLink *decklink_,
 		DeckLinkDevice *device_) :
 	currentFrame(), currentPacket(), decklink(decklink_), device(device_)
 {
-	// use BGRA mode if the device is a BMI intensity pro 4K... wish there
-	// was a better way to check the device model, but older cards don't
-	// implement BMDDeckLinkPersistentID
-	if (std::string("Intensity Pro 4K").compare(device_->GetName()) == 0) {
-		currentFrame.format = VIDEO_FORMAT_BGRX;
-		doRgb = true;
-	} else {
-		currentFrame.format = VIDEO_FORMAT_UYVY;
-		doRgb = false;
-	}
-
 	currentPacket.samples_per_sec = 48000;
 	currentPacket.speakers        = SPEAKERS_STEREO;
 	currentPacket.format          = AUDIO_FORMAT_16BIT;
@@ -89,15 +90,12 @@ bool DeckLinkDeviceInstance::StartCapture(DeckLinkDeviceMode *mode_)
 	if (!device->GetInput(&input))
 		return false;
 
+	pixelFormat = decklink->GetPixelFormat();
+	currentFrame.format = ConvertPixelFormat(pixelFormat);
+
 	input->SetCallback(this);
 
-	BMDPixelFormat pixelFormat;
 	const BMDDisplayMode displayMode = mode_->GetDisplayMode();
-
-	if (doRgb)
-		pixelFormat = bmdFormat8BitBGRA;
-	else
-		pixelFormat = bmdFormat8BitYUV;
 
 	const HRESULT videoResult = input->EnableVideoInput(displayMode,
 			pixelFormat, bmdVideoInputFlagDefault);
