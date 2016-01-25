@@ -30,7 +30,7 @@ const struct obs_service_info *find_service(const char *id)
 const char *obs_service_get_display_name(const char *id)
 {
 	const struct obs_service_info *info = find_service(id);
-	return (info != NULL) ? info->get_name() : NULL;
+	return (info != NULL) ? info->get_name(info->type_data) : NULL;
 }
 
 obs_service_t *obs_service_create(const char *id, const char *name,
@@ -333,4 +333,10 @@ bool obs_weak_service_references_service(obs_weak_service_t *weak,
 		obs_service_t *service)
 {
 	return weak && service && weak->service == service;
+}
+
+void *obs_service_get_type_data(obs_service_t *service)
+{
+	return obs_service_valid(service, "obs_service_get_type_data")
+		? service->info.type_data : NULL;
 }

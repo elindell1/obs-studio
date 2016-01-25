@@ -35,7 +35,7 @@ const struct obs_output_info *find_output(const char *id)
 const char *obs_output_get_display_name(const char *id)
 {
 	const struct obs_output_info *info = find_output(id);
-	return (info != NULL) ? info->get_name() : NULL;
+	return (info != NULL) ? info->get_name(info->type_data) : NULL;
 }
 
 static const char *output_signals[] = {
@@ -1505,4 +1505,10 @@ bool obs_weak_output_references_output(obs_weak_output_t *weak,
 		obs_output_t *output)
 {
 	return weak && output && weak->output == output;
+}
+
+void *obs_output_get_type_data(obs_output_t *output)
+{
+	return obs_output_valid(output, "obs_output_get_type_data")
+		? output->info.type_data : NULL;
 }

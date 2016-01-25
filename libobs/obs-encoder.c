@@ -33,7 +33,7 @@ struct obs_encoder_info *find_encoder(const char *id)
 const char *obs_encoder_get_display_name(const char *id)
 {
 	struct obs_encoder_info *ei = find_encoder(id);
-	return ei ? ei->get_name() : NULL;
+	return ei ? ei->get_name(ei->type_data) : NULL;
 }
 
 static bool init_encoder(struct obs_encoder *encoder, const char *name,
@@ -931,4 +931,10 @@ bool obs_weak_encoder_references_encoder(obs_weak_encoder_t *weak,
 		obs_encoder_t *encoder)
 {
 	return weak && encoder && weak->encoder == encoder;
+}
+
+void *obs_encoder_get_type_data(obs_encoder_t *encoder)
+{
+	return obs_encoder_valid(encoder, "obs_encoder_get_type_data")
+		? encoder->info.type_data : NULL;
 }

@@ -112,7 +112,7 @@ const char *obs_source_get_display_name(enum obs_source_type type,
 		const char *id)
 {
 	const struct obs_source_info *info = get_source_info(type, id);
-	return (info != NULL) ? info->get_name() : NULL;
+	return (info != NULL) ? info->get_name(info->type_data) : NULL;
 }
 
 /* internal initialization */
@@ -3069,4 +3069,10 @@ void obs_source_set_push_to_talk_delay(obs_source_t *source, uint64_t delay)
 
 	source_signal_push_to_delay(source, "push_to_talk_delay", delay);
 	pthread_mutex_unlock(&source->audio_mutex);
+}
+
+void *obs_source_get_type_data(obs_source_t *source)
+{
+	return obs_source_valid(source, "obs_source_get_type_data")
+		? source->info.type_data : NULL;
 }
